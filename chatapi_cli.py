@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import yaml
+import logging
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -28,8 +30,24 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.styles import Style
 
+# Import our validation modules
+from validators import (
+    SecurityValidator, ConfigValidator, SecureStorage, ValidationError
+)
+
 # Load environment variables
 load_dotenv()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(Path.home() / '.chatapi-cli' / 'chatapi.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Initialize Rich console
 console = Console()
@@ -39,19 +57,64 @@ class ChatAPICLI:
         self.config_dir = Path.home() / ".chatapi-cli"
         self.config_file = self.config_dir / "config.yaml"
         self.history_file = self.config_dir / "history.json"
+        self.key_file = self.config_dir / ".encryption_key"
+        
+        # Initialize secure storage
+        self.secure_storage = SecureStorage(str(self.key_file))
+        
+        # Initialize clients
         self.openai_client = None
         self.perplexity_client = None
-        self.config = self.load_config()
+        
+        # Initialize session and history
         self.session = PromptSession()
         self.conversation_history = []
+        
+        # Load and validate configuration
+        self.config = self.load_config()
+        self._validate_and_fix_config()
+    
+    def _validate_and_fix_config(self):
+        """Validate configuration and fix common issues."""
+        try:
+            errors = ConfigValidator.validate_config(self.config)
+            if errors:
+                logger.warning(f"Configuration validation errors: {errors}")
+                console.print("[yellow]Configuration issues detected:[/yellow]")
+                for error in errors:
+                    console.print(f"  • {error}")
+                console.print("[yellow]Some features may not work properly.[/yellow]")
+        except Exception as e:
+            logger.error(f"Configuration validation failed: {e}")
+            console.print(f"[red]Configuration validation failed: {e}[/red]")
         
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from file or create default."""
         if self.config_file.exists():
             try:
                 with open(self.config_file, 'r') as f:
-                    return yaml.safe_load(f) or {}
+                    config = yaml.safe_load(f) or {}
+                
+                # Decrypt API keys if they're encrypted
+                if 'openai_api_key' in config and config['openai_api_key'].startswith('encrypted:'):
+                    try:
+                        encrypted_key = config['openai_api_key'][10:]  # Remove 'encrypted:' prefix
+                        config['openai_api_key'] = self.secure_storage.decrypt(encrypted_key)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt OpenAI API key: {e}")
+                        config['openai_api_key'] = ''
+                
+                if 'perplexity_api_key' in config and config['perplexity_api_key'].startswith('encrypted:'):
+                    try:
+                        encrypted_key = config['perplexity_api_key'][10:]  # Remove 'encrypted:' prefix
+                        config['perplexity_api_key'] = self.secure_storage.decrypt(encrypted_key)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt Perplexity API key: {e}")
+                        config['perplexity_api_key'] = ''
+                
+                return config
             except Exception as e:
+                logger.error(f"Error loading config: {e}")
                 console.print(f"[red]Error loading config: {e}[/red]")
                 return {}
         
@@ -72,10 +135,36 @@ class ChatAPICLI:
         return default_config
     
     def save_config(self, config: Dict[str, Any]):
-        """Save configuration to file."""
-        self.config_dir.mkdir(exist_ok=True)
+        """Save configuration to file with encrypted API keys."""
+        self.config_dir.mkdir(exist_ok=True, mode=0o700)  # Secure directory permissions
+        
+        # Create a copy of config for saving
+        save_config = config.copy()
+        
+        # Encrypt API keys before saving
+        if 'openai_api_key' in save_config and save_config['openai_api_key']:
+            if not save_config['openai_api_key'].startswith('encrypted:'):
+                try:
+                    encrypted_key = self.secure_storage.encrypt(save_config['openai_api_key'])
+                    save_config['openai_api_key'] = f'encrypted:{encrypted_key}'
+                except Exception as e:
+                    logger.error(f"Failed to encrypt OpenAI API key: {e}")
+        
+        if 'perplexity_api_key' in save_config and save_config['perplexity_api_key']:
+            if not save_config['perplexity_api_key'].startswith('encrypted:'):
+                try:
+                    encrypted_key = self.secure_storage.encrypt(save_config['perplexity_api_key'])
+                    save_config['perplexity_api_key'] = f'encrypted:{encrypted_key}'
+                except Exception as e:
+                    logger.error(f"Failed to encrypt Perplexity API key: {e}")
+        
+        # Save config file with secure permissions
         with open(self.config_file, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False)
+            yaml.dump(save_config, f, default_flow_style=False)
+        
+        # Set secure file permissions (readable only by owner)
+        os.chmod(self.config_file, 0o600)
+        logger.info("Configuration saved with secure permissions")
     
     def initialize_client(self):
         """Initialize API client based on configured provider."""
@@ -147,49 +236,72 @@ class ChatAPICLI:
     
     def chat(self, message: str) -> str:
         """Send message to ChatGPT/Perplexity and return response."""
+        # Validate input message
+        try:
+            validated_message = SecurityValidator.validate_message(message)
+        except ValidationError as e:
+            error_msg = f"Input validation error: {e}"
+            logger.error(error_msg)
+            console.print(f"[red]{error_msg}[/red]")
+            return error_msg
+        
         if not self.openai_client and not self.perplexity_client:
             self.initialize_client()
         
-        try:
-            messages = self.get_messages()
-            messages.append({'role': 'user', 'content': message})
-            
-            with console.status("[bold green]Thinking...", spinner="dots"):
-                if self.openai_client:
-                    response = self.openai_client.chat.completions.create(
-                        model=self.config.get('model', 'gpt-3.5-turbo'),
-                        messages=messages,
-                        max_tokens=self.config.get('max_tokens', 1000),
-                        temperature=self.config.get('temperature', 0.7)
-                    )
-                    assistant_message = response.choices[0].message.content
-                    
-                    if self.config.get('show_tokens', False):
-                        console.print(f"[dim]Tokens used: {response.usage.total_tokens}[/dim]")
+        # Retry logic for API calls
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                messages = self.get_messages()
+                messages.append({'role': 'user', 'content': validated_message})
+                
+                with console.status("[bold green]Thinking...", spinner="dots"):
+                    if self.openai_client:
+                        response = self.openai_client.chat.completions.create(
+                            model=self.config.get('model', 'gpt-3.5-turbo'),
+                            messages=messages,
+                            max_tokens=self.config.get('max_tokens', 1000),
+                            temperature=self.config.get('temperature', 0.7)
+                        )
+                        assistant_message = response.choices[0].message.content
                         
-                elif self.perplexity_client:
-                    response = self.perplexity_client.chat.completions.create(
-                        model=self.config.get('model', 'llama-3.1-sonar-small-128k-online'),
-                        messages=messages,
-                        max_tokens=self.config.get('max_tokens', 1000),
-                        temperature=self.config.get('temperature', 0.7)
-                    )
-                    assistant_message = response.choices[0].message.content
-                    
-                    if self.config.get('show_tokens', False):
-                        console.print(f"[dim]Tokens used: {response.usage.total_tokens}[/dim]")
-            
-            # Add to history
-            self.add_to_history('user', message)
-            self.add_to_history('assistant', assistant_message)
-            
-            return assistant_message
-            
-        except Exception as e:
-            provider = self.config.get('provider', 'openai')
-            error_msg = f"Error communicating with {provider.title()}: {e}"
-            console.print(f"[red]{error_msg}[/red]")
-            return error_msg
+                        if self.config.get('show_tokens', False):
+                            console.print(f"[dim]Tokens used: {response.usage.total_tokens}[/dim]")
+                            
+                    elif self.perplexity_client:
+                        response = self.perplexity_client.chat.completions.create(
+                            model=self.config.get('model', 'llama-3.1-sonar-small-128k-online'),
+                            messages=messages,
+                            max_tokens=self.config.get('max_tokens', 1000),
+                            temperature=self.config.get('temperature', 0.7)
+                        )
+                        assistant_message = response.choices[0].message.content
+                        
+                        if self.config.get('show_tokens', False):
+                            console.print(f"[dim]Tokens used: {response.usage.total_tokens}[/dim]")
+                
+                # Add to history
+                self.add_to_history('user', validated_message)
+                self.add_to_history('assistant', assistant_message)
+                
+                logger.info(f"Successful API call (attempt {attempt + 1})")
+                return assistant_message
+                
+            except Exception as e:
+                logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt < max_retries - 1:
+                    console.print(f"[yellow]Retrying in {retry_delay} seconds...[/yellow]")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    provider = self.config.get('provider', 'openai')
+                    error_msg = f"Error communicating with {provider.title()} after {max_retries} attempts: {e}"
+                    logger.error(error_msg)
+                    console.print(f"[red]{error_msg}[/red]")
+                    return error_msg
     
     def display_response(self, response: str):
         """Display response with rich formatting."""

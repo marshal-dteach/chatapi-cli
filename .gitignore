@@ -138,5 +138,34 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
-# ChatGPT CLI specific
-.chatgpt-cli/ 
+# ChatAPI CLI specific
+.chatapi-cli/
+*.log
+
+# Test coverage
+.coverage
+htmlcov/
+.coverage.*
+
+# Security and encryption
+.encryption_key
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp 

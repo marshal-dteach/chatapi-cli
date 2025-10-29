@@ -24,7 +24,7 @@ class SecurityValidator:
     
     # API key patterns for validation
     OPENAI_API_KEY_PATTERN = r'^sk-[a-zA-Z0-9]{48}$'
-    PERPLEXITY_API_KEY_PATTERN = r'^pplx-[a-zA-Z0-9]{40}$'
+    PERPLEXITY_API_KEY_PATTERN = r'^pplx-[a-zA-Z0-9]{48}$'
     
     # Allowed model names
     ALLOWED_OPENAI_MODELS = [
@@ -33,6 +33,11 @@ class SecurityValidator:
     ]
     
     ALLOWED_PERPLEXITY_MODELS = [
+        'sonar',
+        'sonar-small',
+        'sonar-medium',
+        'sonar-large',
+        'sonar-huge',
         'llama-3.1-sonar-small-128k-online',
         'llama-3.1-sonar-large-128k-online',
         'llama-3.1-sonar-huge-128k-online',
@@ -141,13 +146,13 @@ class ConfigValidator:
             api_key = config.get('openai_api_key', '')
             if not api_key:
                 errors.append("OpenAI API key not set")
-            elif not SecurityValidator.validate_api_key(api_key, 'openai'):
+            elif not api_key.startswith('encrypted:') and not SecurityValidator.validate_api_key(api_key, 'openai'):
                 errors.append("Invalid OpenAI API key format")
         elif provider == 'perplexity':
             api_key = config.get('perplexity_api_key', '')
             if not api_key:
                 errors.append("Perplexity API key not set")
-            elif not SecurityValidator.validate_api_key(api_key, 'perplexity'):
+            elif not api_key.startswith('encrypted:') and not SecurityValidator.validate_api_key(api_key, 'perplexity'):
                 errors.append("Invalid Perplexity API key format")
         
         # Validate model

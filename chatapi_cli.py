@@ -16,7 +16,7 @@ from datetime import datetime
 
 import click
 import openai
-import perplexity
+from perplexity import Perplexity
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -119,11 +119,12 @@ class ChatAPICLI:
                 return {}
         
         # Create default config
+        provider = os.getenv('CHATAPI_PROVIDER', 'openai')
         default_config = {
-            'provider': 'openai',  # 'openai' or 'perplexity'
+            'provider': provider,  # 'openai' or 'perplexity'
             'openai_api_key': os.getenv('OPENAI_API_KEY', ''),
             'perplexity_api_key': os.getenv('PERPLEXITY_API_KEY', ''),
-            'model': 'gpt-3.5-turbo',
+            'model': 'sonar' if provider == 'perplexity' else 'gpt-3.5-turbo',
             'max_tokens': 1000,
             'temperature': 0.7,
             'system_prompt': 'You are a helpful assistant.',
@@ -190,7 +191,7 @@ class ChatAPICLI:
                 console.print("Or set the PERPLEXITY_API_KEY environment variable.")
                 sys.exit(1)
             
-            self.perplexity_client = perplexity.Client(api_key=api_key)
+            self.perplexity_client = Perplexity(api_key=api_key)
             
         else:
             console.print(f"[red]Error: Unknown provider '{provider}'. Supported providers: openai, perplexity[/red]")
@@ -272,7 +273,7 @@ class ChatAPICLI:
                             
                     elif self.perplexity_client:
                         response = self.perplexity_client.chat.completions.create(
-                            model=self.config.get('model', 'llama-3.1-sonar-small-128k-online'),
+                            model=self.config.get('model', 'sonar'),
                             messages=messages,
                             max_tokens=self.config.get('max_tokens', 1000),
                             temperature=self.config.get('temperature', 0.7)
@@ -333,8 +334,10 @@ class ChatAPICLI:
         
         while True:
             try:
+                # Use Rich Prompt for styling but add completion support
+                console.print("\n[bold cyan]You:[/bold cyan] \n", end="")
                 user_input = self.session.prompt(
-                    "\n[bold cyan]You:[/bold cyan] ",
+                    "",
                     completer=completer
                 ).strip()
                 

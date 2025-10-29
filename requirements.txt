@@ -1,6 +1,6 @@
 # Core API clients
 openai==1.51.0
-perplexity-api==0.0.1
+perplexityai==0.17.1
 
 # CLI and UI
 click==8.1.7
